@@ -74,49 +74,63 @@ def determine_n_factors(df: pd.DataFrame) -> dict:
     }
 """
 import numpy as np
+import numpy as np
 import pandas as pd
 from factor_analyzer import FactorAnalyzer
 
 def _prepare_efa_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean dataset for EFA safely."""
-    
-    # 1. numeric only
-    df = df.select_dtypes(include=[np.number])
+    df = df.copy()
 
-    # 2. remove inf / -inf
+    # 1. force numeric (important improvement)
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # 2. remove inf
     df = df.replace([np.inf, -np.inf], np.nan)
 
-    # 3. drop rows with NaN (or replace with mean if you prefer)
+    # 3. drop columns with too many missing values
+    df = df.loc[:, df.isna().mean() < 0.5]
+
+    # 4. drop remaining NaNs
     df = df.dropna()
 
-    # 4. remove constant columns
+    # 5. remove constant / near-constant columns
     df = df.loc[:, df.nunique() > 1]
+
+    # 6. remove near-zero variance columns (IMPORTANT FIX)
+    df = df.loc[:, df.std() > 1e-8]
 
     return df
 
 
 def determine_n_factors(df: pd.DataFrame) -> dict:
-    """
-    Compute eigenvalues and suggest n_factors via Kaiser criterion.
-    Streamlit-safe version.
-    """
-
     df_clean = _prepare_efa_df(df)
 
-    # 🔴 HARD SAFETY CHECKS
+    # HARD SAFETY CHECKS
     if df_clean.shape[1] < 3:
-        raise ValueError(
-            f"EFA requires at least 3 valid numeric variables. "
-            f"Got {df_clean.shape[1]}."
-        )
+        raise ValueError("EFA requires at least 3 valid numeric variables.")
 
     if df_clean.shape[0] < df_clean.shape[1] * 5:
+        raise ValueError("Insufficient sample size for stable EFA.")
+
+    # 🔥 CORRELATION SANITY CHECK (CRITICAL)
+    corr = df_clean.corr().abs()
+
+    if corr.mean().mean() < 0.1:
         raise ValueError(
-            "Insufficient sample size for stable EFA. "
-            "Rule of thumb: at least 5–10 observations per variable."
+            "Variables are too weakly correlated for EFA."
         )
 
-    # 🔥 IMPORTANT FIX: use cleaned df
+    if (corr > 0.999).sum().sum() > len(corr):
+        raise ValueError(
+            "Severe multicollinearity detected (duplicate variables)."
+        )
+
+    # FINAL SAFETY: ensure no NaN
+    if df_clean.isna().sum().sum() > 0:
+        raise ValueError("NaNs still present after cleaning.")
+
+    # RUN EFA
     fa = FactorAnalyzer(
         n_factors=min(df_clean.shape[1], df_clean.shape[0] - 1),
         rotation=None
@@ -124,14 +138,11 @@ def determine_n_factors(df: pd.DataFrame) -> dict:
 
     fa.fit(df_clean)
 
-    ev, v = fa.get_eigenvalues()
-
-    kaiser_n = int(np.sum(ev > 1))
-    kaiser_n = max(1, kaiser_n)
+    ev, _ = fa.get_eigenvalues()
 
     return {
         "eigenvalues": ev.tolist(),
-        "suggested_n": kaiser_n,
+        "suggested_n": max(1, int(np.sum(ev > 1))),
         "clean_shape": df_clean.shape
     }
 
