@@ -160,7 +160,7 @@ def plot_communalities(communalities: pd.Series,
 # ─────────────────────────────────────────
 # 4. CFA Fit Index Gauge / Bar
 # ─────────────────────────────────────────
-
+""""
 def plot_fit_indices(fit_assessment: dict) -> go.Figure:
     indices_data = fit_assessment.get("indices", {})
     if not indices_data:
@@ -208,6 +208,72 @@ def plot_fit_indices(fit_assessment: dict) -> go.Figure:
         height=380,
     )
     return fig
+    
+    """"
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+
+def plot_correlation_matrix(df: pd.DataFrame, title: str = "Correlation Matrix") -> go.Figure:
+    # 1. Keep numeric only
+    df_num = df.select_dtypes(include=[np.number])
+
+    # 2. Remove constant columns (zero variance breaks correlation)
+    df_num = df_num.loc[:, df_num.nunique() > 1]
+
+    # 3. Safety check
+    if df_num.shape[1] < 2:
+        fig = go.Figure()
+        fig.update_layout(title="Not enough numeric variables for correlation matrix")
+        return fig
+
+    # 4. Correlation
+    corr = df_num.corr()
+
+    # 5. Clean invalid values
+    corr = corr.replace([np.inf, -np.inf], np.nan).fillna(0).round(2)
+
+    cols = corr.columns.tolist()
+
+    # 6. Heatmap
+    fig = go.Figure(go.Heatmap(
+        z=corr.values,
+        x=cols,
+        y=cols,
+        colorscale="RdBu",
+        zmid=0,
+        zmin=-1,
+        zmax=1,
+        hovertemplate="%{y} × %{x}<br>r = %{z:.2f}<extra></extra>",
+    ))
+
+    # 7. Annotations (safe formatting)
+    annotations = []
+    for i, r in enumerate(corr.index):
+        for j, c in enumerate(corr.columns):
+            val = corr.iloc[i, j]
+
+            annotations.append(dict(
+                x=c,
+                y=r,
+                text=f"{val:.2f}",
+                showarrow=False,
+                font=dict(
+                    size=9,
+                    color="white" if abs(val) > 0.5 else "black"
+                )
+            ))
+
+    fig.update_layout(
+        title=title,
+        annotations=annotations,
+        height=max(350, len(cols) * 30 + 120),
+        xaxis=dict(tickangle=-35),
+    )
+
+    return fig
+
+
 
 
 # ─────────────────────────────────────────
