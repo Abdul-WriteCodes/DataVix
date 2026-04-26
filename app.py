@@ -685,10 +685,14 @@ if uploaded:
             else:
                 st.error("❌ Unsupported file type. Upload a .csv, .xlsx, or .xls file.")
                 st.stop()
-            # Coerce all columns to numeric where possible (fixes string-encoded
-            # psychometric scale values, e.g. "1","2","3" read as object dtype)
+            # Coerce string-encoded scale values (e.g. "1","2","3") to numeric
             df_coerced = df_raw.apply(lambda col: pd.to_numeric(col, errors="coerce"))
-            df_numeric = df_coerced.select_dtypes(include=[np.number]).dropna()
+            # Select numeric columns, drop columns that are entirely NaN (e.g. blank
+            # survey fields like Name/Last-modified), then drop rows with any remaining NaN
+            df_numeric = (df_coerced
+                          .select_dtypes(include=[np.number])
+                          .dropna(axis=1, how="all")
+                          .dropna())
             if len(df_numeric.columns) < 3:
                 st.error("❌ Need at least 3 numeric variables. Non-numeric columns are excluded automatically.")
                 st.stop()
