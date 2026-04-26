@@ -1,43 +1,7 @@
 # 🔬 EFA / CFA Analyser
 
-A rigorous, researcher-grade Streamlit app for Exploratory and Confirmatory Factor Analysis.
-Single-file architecture — deploy to Streamlit Cloud in under 2 minutes.
+A rigorous, researcher-grade app for Exploratory and Confirmatory Factor Analysis.
 
----
-
-## 🚀 Deploy to Streamlit Cloud
-
-1. Push this folder to a **GitHub repository**
-2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app**
-3. Select your repo, branch, set **Main file path** → `app.py`
-4. Click **Deploy**
-
-That's it. No server setup, no Docker, no config beyond what's here.
-
----
-
-## 💻 Run Locally
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-> **Python 3.10+** recommended. If `semopy` install fails, try:
-> `pip install semopy --no-build-isolation`
-
----
-
-## 📁 File Structure
-
-```
-efa_cfa_single/
-├── app.py                  ← Everything in one file (~700 lines)
-├── requirements.txt        ← All dependencies
-├── README.md               ← This file
-└── .streamlit/
-    └── config.toml         ← Dark theme + upload size config
-```
 
 ---
 
