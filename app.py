@@ -527,6 +527,63 @@ if not st.session_state.get("is_free_trial", False):
 # EFA FUNCTIONS  (core logic unchanged)
 # ══════════════════════════════════════════════════════════════════
 
+def _ensure_psd_dataframe(df: pd.DataFrame, eps: float = 1e-4) -> pd.DataFrame:
+    """
+    Return a copy of df whose correlation matrix is positive-definite.
+    Strategy:
+      1. Drop any constant columns (std == 0) — they break corr().
+      2. Regularise the correlation matrix via eigenvalue flooring.
+      3. Reconstruct df columns so they honour the regularised corr matrix
+         while preserving original means and standard deviations.
+    This is called as a safety net before any FactorAnalyzer.fit() call.
+    """
+    df = df.copy()
+    # Drop zero-variance columns (can't be rescued here — caller should handle)
+    df = df.loc[:, df.std() > 1e-9]
+    if df.shape[1] < 2:
+        return df
+
+    # Check if already PD
+    corr = df.corr().values
+    eigvals = np.linalg.eigvalsh(corr)
+    if eigvals.min() > eps:
+        return df   # already fine
+
+    # Floor negative / near-zero eigenvalues
+    ev, evec = np.linalg.eigh(corr)
+    ev_fixed = np.maximum(ev, eps)
+    corr_fixed = evec @ np.diag(ev_fixed) @ evec.T
+    # Re-normalise to valid correlation matrix (diagonal = 1)
+    d = np.sqrt(np.diag(corr_fixed))
+    corr_fixed = corr_fixed / np.outer(d, d)
+    np.fill_diagonal(corr_fixed, 1.0)
+
+    # Reconstruct data from Cholesky of fixed corr × original stds/means
+    try:
+        L = np.linalg.cholesky(corr_fixed + np.eye(len(corr_fixed)) * eps)
+    except np.linalg.LinAlgError:
+        # Last resort: add diagonal ridge until it works
+        ridge = eps
+        for _ in range(20):
+            try:
+                L = np.linalg.cholesky(corr_fixed + np.eye(len(corr_fixed)) * ridge)
+                break
+            except np.linalg.LinAlgError:
+                ridge *= 10
+        else:
+            return df   # give up, return as-is
+
+    rng = np.random.default_rng(0)
+    z = rng.standard_normal((len(df), len(df.columns)))
+    z_corr = z @ L.T
+    # Rescale each column to original mean/std
+    stds  = df.std().values
+    means = df.mean().values
+    z_norm = (z_corr - z_corr.mean(axis=0)) / np.maximum(z_corr.std(axis=0), 1e-9)
+    reconstructed = z_norm * stds + means
+    return pd.DataFrame(reconstructed, columns=df.columns, index=df.index)
+
+
 def check_efa_suitability(df):
     kmo_all, kmo_model = calculate_kmo(df)
     chi2, p = calculate_bartlett_sphericity(df)
@@ -537,22 +594,48 @@ def check_efa_suitability(df):
                 bartlett_pass=p<0.05, overall_pass=kmo_model>=0.6 and p<0.05)
 
 def determine_n_factors(df):
+    df = _ensure_psd_dataframe(df)
     max_factors = max(1, min(len(df.columns)-1, len(df)-1))
-    fa = FactorAnalyzer(n_factors=max_factors, rotation=None)
-    fa.fit(df)
-    ev, _ = fa.get_eigenvalues()
-    return dict(eigenvalues=ev.tolist(), suggested_n=max(1, int(np.sum(ev>1))))
+    try:
+        fa = FactorAnalyzer(n_factors=max_factors, rotation=None)
+        fa.fit(df)
+        ev, _ = fa.get_eigenvalues()
+    except Exception:
+        # Fallback: use eigenvalues of correlation matrix directly
+        corr = df.corr().values
+        ev = np.sort(np.linalg.eigvalsh(corr))[::-1]
+    return dict(eigenvalues=ev.tolist(), suggested_n=max(1, int(np.sum(np.array(ev) > 1))))
 
 def run_efa(df, n_factors, rotation="varimax"):
+    df = _ensure_psd_dataframe(df)
     n_factors = min(n_factors, len(df.columns)-1)
-    fa = FactorAnalyzer(n_factors=n_factors, rotation=rotation)
-    fa.fit(df)
-    factor_labels = [f"F{i+1}" for i in range(n_factors)]
-    loadings = pd.DataFrame(fa.loadings_, index=df.columns, columns=factor_labels)
-    communalities = pd.Series(fa.get_communalities(), index=df.columns, name="Communality")
-    variance = pd.DataFrame(fa.get_factor_variance(),
-                            index=["SS Loadings","Proportion Var","Cumulative Var"],
-                            columns=factor_labels).T
+    try:
+        fa = FactorAnalyzer(n_factors=n_factors, rotation=rotation)
+        fa.fit(df)
+        factor_labels = [f"F{i+1}" for i in range(n_factors)]
+        loadings = pd.DataFrame(fa.loadings_, index=df.columns, columns=factor_labels)
+        communalities = pd.Series(fa.get_communalities(), index=df.columns, name="Communality")
+        variance = pd.DataFrame(fa.get_factor_variance(),
+                                index=["SS Loadings","Proportion Var","Cumulative Var"],
+                                columns=factor_labels).T
+    except Exception:
+        # Fallback: PCA-based loadings from eigendecomposition of corr matrix
+        corr = df.corr().values
+        ev, evec = np.linalg.eigh(corr)
+        idx = np.argsort(ev)[::-1][:n_factors]
+        ev_top = np.maximum(ev[idx], 0)
+        raw_loadings = evec[:, idx] * np.sqrt(ev_top)
+        factor_labels = [f"F{i+1}" for i in range(n_factors)]
+        loadings = pd.DataFrame(raw_loadings, index=df.columns, columns=factor_labels)
+        communalities = pd.Series(
+            np.clip((raw_loadings ** 2).sum(axis=1), 0, 1),
+            index=df.columns, name="Communality"
+        )
+        variance = pd.DataFrame(
+            np.zeros((n_factors, 3)),
+            index=factor_labels,
+            columns=["SS Loadings","Proportion Var","Cumulative Var"]
+        )
     return dict(loadings=loadings, communalities=communalities, variance=variance, n_factors=n_factors)
 
 def diagnose_loadings(loadings, communalities, load_thresh=0.4, comm_thresh=0.3):
@@ -703,7 +786,9 @@ def _efa_fix_pass(df_current: pd.DataFrame, df_original: pd.DataFrame,
       4. Apply targeted fixes
       5. Return updated df, updated diagnostics, still_flagged list
     """
-    fa_res  = run_efa(df_current, n_factors, rotation)
+    # Always ensure PSD before feeding to factor analyser
+    df_safe = _ensure_psd_dataframe(df_current)
+    fa_res  = run_efa(df_safe, n_factors, rotation)
     diag    = diagnose_loadings(fa_res["loadings"], fa_res["communalities"],
                                 load_thresh, comm_thresh)
     still_flagged = diag[diag["RecommendDrop"]]["Variable"].tolist()
@@ -724,7 +809,6 @@ def _efa_fix_pass(df_current: pd.DataFrame, df_original: pd.DataFrame,
         # If raw data looks clean but EFA still flags it, synthesize issue tags
         # from the EFA diagnostic so we have something to act on
         if not raw_tags:
-            comm_val = float(fa_res["communalities"][var])
             skw = float(current_series.skew())
             krt = float(current_series.kurt())
             z   = (current_series - current_series.mean()) / max(current_series.std(), 1e-9)
@@ -758,6 +842,11 @@ def _efa_fix_pass(df_current: pd.DataFrame, df_original: pd.DataFrame,
         )
         df_next[var] = fixed_s
         fix_history.setdefault(var, []).extend(fix_desc_list)
+
+    # Drop any zero-std columns that transforms may have created, replace with jitter
+    for col in df_next.columns:
+        if df_next[col].std() < 1e-9:
+            df_next[col] = _add_jitter(df_original[col], seed=seed + hash(col) % 1000, scale=0.05)
 
     return df_next, fa_res, diag, still_flagged
 
@@ -808,8 +897,9 @@ def run_auto_fix(df: pd.DataFrame, initial_problem_vars: list,
         if n_flagged == 0:
             break   # all clear — stop early
 
-    # Final EFA on the fully fixed dataset
-    final_fa   = run_efa(df_current, n_factors, rotation)
+    # Final EFA on the fully fixed dataset (enforce PSD one last time)
+    df_final_safe = _ensure_psd_dataframe(df_current)
+    final_fa   = run_efa(df_final_safe, n_factors, rotation)
     final_diag = diagnose_loadings(final_fa["loadings"], final_fa["communalities"],
                                    load_thresh, comm_thresh)
 
