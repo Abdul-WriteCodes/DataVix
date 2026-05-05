@@ -11,10 +11,10 @@ EFActor is a web-based AI-powered psychometric analysis platform designed for re
 
 ## Problem
 Researchers face major friction when running factor analysis:
--⚠️ High learning curve (R, SPSS syntax, SEM tools)
--⚠️ Poor diagnostics for item-level issues
--⚠️ Manual iteration (drop, rerun, repeat)
--🚫 No built-in data repair mechanisms
+- ⚠️ High learning curve (R, SPSS syntax, SEM tools)
+- ⚠️ Poor diagnostics for item-level issues
+- ⚠️ Manual iteration (drop, rerun, repeat)
+- 🚫 No built-in data repair mechanisms
 
 
 ## The Solution
